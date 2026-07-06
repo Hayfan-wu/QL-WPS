@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-WPS 会员中心 自动签到 & 任务完成脚本
-=====================================
+WPS 会员中心 自动签到 & 任务完成 & 抽奖 & 推送脚本
+===================================================
 功能：
   1. 每日签到（RSA + AES 加密，已验证可用）
-  2. 自适应任务完成引擎 — 按任务类型自动选择完成策略，不硬编码任务ID
+  2. 自适应任务完成引擎 — 按任务类型自动选择策略，不硬编码任务ID
      - click / share / scan  → task_center.finish + reward（直接完成）
      - browse                → start → task_info → 等待 → task_finish → reward
      - exchange_traffic      → start → 访问jump_url+token → finish → reward
      - toReceive(待领奖)      → 直接 reward
      - 其余类型(trade/auth/invite/subscribe等) → 跳过并提示
-  3. 任务变更后仍能自适应处理（按 task_event + task_status 分发）
+  3. 自动抽奖 — 消耗所有可用抽奖次数，自动执行九宫格抽奖
+  4. WXPusher 推送 — 执行完毕后推送汇总报告到微信
+  5. 任务变更后仍能自适应处理（按 task_event + task_status 分发）
 
 依赖：
   pip install requests pycryptodome
@@ -57,6 +59,10 @@ PAGE_NUMBER = "YM2025040908558269"
 COMPONENT_NUMBER = "ZJ2025040709458367"
 COMPONENT_NODE_ID = "FN1744160180RthG"
 COMPONENT_TYPE = 35
+# 抽奖组件标识（来自 page_info，一般无需修改）
+LOTTERY_NUMBER = "ZJ2025092916516585"
+LOTTERY_NODE_ID = "FN1762345949vdR1"
+LOTTERY_TYPE = 45
 FILTER_PARAMS = {"position": "ad_rwzx_invite_test", "token": "61b3f3ab86984a191927bfe7748b85a5"}
 
 # 浏览任务等待冗余秒数
@@ -65,8 +71,22 @@ BROWSE_EXTRA_WAIT = 3
 REQUEST_INTERVAL = 1.5
 # finish 后等待秒数（前端默认3秒后刷新状态）
 FINISH_DELAY = 3
+# 抽奖每次间隔（秒）
+LOTTERY_INTERVAL = 2
 # 是否执行签到
 DO_SIGN_IN = True
+# 是否执行自动抽奖
+DO_LOTTERY = True
+
+# ====== WXPusher 推送配置 ======
+# 申请地址：https://wxpusher.zjiecode.com/
+# appToken：在 WxPusher 后台创建应用后获取
+# uid：关注应用后获取（公众号「wxpusher」→ 我的 → 我的UID）
+# 留空则不推送，仅控制台输出
+WXPUSHER_APP_TOKEN = os.getenv("WXPUSHER_APP_TOKEN", "")
+WXPUSHER_UID = os.getenv("WXPUSHER_UID", "")
+# 推送开关
+DO_PUSH = bool(WXPUSHER_APP_TOKEN and WXPUSHER_UID)
 # ======================== 配置区结束 ========================
 
 # 任务状态枚举
@@ -113,6 +133,54 @@ class Log:
         print(f"\n{'='*52}\n[{Log._ts()}] >>> {msg}\n{'='*52}")
 
 
+# ----------------------- WXPusher 推送 -----------------------
+class WxPusher:
+    """WXPusher 消息推送（https://wxpusher.zjiecode.com/）"""
+    API_URL = "https://wxpusher.zjiecode.com/api/send/message"
+
+    def __init__(self, app_token, uid):
+        self.app_token = app_token
+        self.uid = uid
+        self.enabled = bool(app_token and uid)
+
+    def send(self, content, summary="WPS任务通知", content_type=1):
+        """发送消息
+        content_type: 1=文字, 2=html, 3=markdown
+        """
+        if not self.enabled:
+            return False
+        body = {
+            "appToken": self.app_token,
+            "content": content,
+            "summary": summary[:100],
+            "contentType": content_type,
+            "uids": [self.uid],
+        }
+        try:
+            r = requests.post(self.API_URL, json=body, timeout=15)
+            d = r.json()
+            if d.get("code") == 1000:
+                Log.ok("WXPusher 推送成功")
+                return True
+            Log.fail(f"WXPusher 推送失败：{d.get('msg', '')}")
+            return False
+        except Exception as e:
+            Log.fail(f"WXPusher 推送异常：{e}")
+            return False
+
+    def send_report(self, title, items):
+        """发送汇总报告（markdown 格式）
+        items: list of str，每项一行
+        """
+        if not self.enabled:
+            Log.info("未配置 WXPusher，跳过推送")
+            return False
+        lines = [f"## {title}", ""]
+        lines.extend(items)
+        content = "\n".join(lines)
+        return self.send(content, summary=title, content_type=3)
+
+
 # ----------------------- 加密工具 -----------------------
 def gen_aes_key():
     rnd = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(22))
@@ -157,6 +225,9 @@ class WpsAuto:
         self.user_id = self._extract_uid(cookie)
         self.csrf = self.s.cookies.get("csrf", "")
         self.stats = {"ok": 0, "skip": 0, "fail": 0}
+        self.lottery_rewards = []
+        self.nickname = ""
+        self.pusher = WxPusher(WXPUSHER_APP_TOKEN, WXPUSHER_UID)
 
     @staticmethod
     def _extract_uid(cookie):
@@ -175,8 +246,8 @@ class WpsAuto:
                         headers={"X-CSRFToken": self.csrf}, json={}, timeout=15)
         d = r.json()
         if d.get("result") == "ok":
-            nick = d.get("nickname", "") or "未设置"
-            Log.ok(f"账号登录有效，用户：{nick}（uid={d.get('userid', self.user_id)}）")
+            self.nickname = d.get("nickname", "") or "未设置"
+            Log.ok(f"账号登录有效，用户：{self.nickname}（uid={d.get('userid', self.user_id)}）")
             return True
         Log.fail(f"账号登录失效：{d.get('result', '')} {d.get('msg', '')}")
         return False
@@ -393,9 +464,106 @@ class WpsAuto:
         # 汇总
         Log.step(f"任务完成汇总：成功 {self.stats['ok']} / 跳过 {self.stats['skip']} / 失败 {self.stats['fail']}")
 
+    # ---------- 抽奖 ----------
+    def get_lottery_info(self):
+        """从 page_info 获取抽奖组件信息"""
+        r = self.s.get(f"{self.ACT_BASE}/activity/page_info",
+                       params={"activity_number": ACTIVITY_NUMBER, "page_number": PAGE_NUMBER,
+                               "filter_params": json.dumps(FILTER_PARAMS)}, timeout=20)
+        data = r.json().get("data", []) or []
+        for c in data:
+            lv2 = c.get("lottery_v2")
+            if lv2:
+                return lv2
+        return None
+
+    def _do_lottery_draw(self, session_id):
+        """执行一次抽奖"""
+        body = {
+            "component_uniq_number": {
+                "activity_number": ACTIVITY_NUMBER,
+                "page_number": PAGE_NUMBER,
+                "component_number": LOTTERY_NUMBER,
+                "component_node_id": LOTTERY_NODE_ID,
+                "filter_params": FILTER_PARAMS,
+            },
+            "component_type": LOTTERY_TYPE,
+            "component_action": "lottery_v2.exec",
+            "lottery_v2": {"session_id": session_id},
+        }
+        r = self.s.post(f"{self.ACT_BASE}/activity/component_action",
+                        headers={"X-Act-Csrf-Token": self._act_csrf()}, json=body, timeout=20)
+        d = r.json()
+        lv2 = (d.get("data") or {}).get("lottery_v2") or {}
+        return d, lv2
+
+    def run_lottery(self):
+        """自动执行抽奖，消耗所有可用次数"""
+        if not DO_LOTTERY:
+            return
+        Log.step("开始自动抽奖")
+        info = self.get_lottery_info()
+        if not info:
+            Log.warn("未获取到抽奖组件信息")
+            return
+        integral = info.get("integral", 0)
+        Log.info(f"当前积分：{integral}")
+        sessions = info.get("lottery_list", []) or []
+        active = [s for s in sessions if s.get("session_status") == "IN_PROGRESS" and s.get("times", 0) > 0]
+        if not active:
+            Log.ok("无可用抽奖次数")
+            return
+        for s in active:
+            sid = s["session_id"]
+            times = s.get("times", 0)
+            stype = s.get("lottery_type", 0)
+            Log.info(f"场次 {sid}：剩余 {times} 次，类型={'积分' if stype else '次数'}抽奖")
+            for i in range(times):
+                d, lv2 = self._do_lottery_draw(sid)
+                success = lv2.get("success")
+                reward = lv2.get("reward_name", "")
+                rtype = lv2.get("reward_type", "")
+                err = lv2.get("error_code", 0)
+                if success:
+                    Log.ok(f"第 {i+1}/{times} 次抽奖：中奖 {reward}（{rtype}）")
+                    self.lottery_rewards.append(reward)
+                else:
+                    Log.fail(f"第 {i+1}/{times} 次抽奖失败：err={err} msg={d.get('msg','')}")
+                    if err in (10005, 10007):  # 次数用完/达到最大中奖数
+                        break
+                time.sleep(LOTTERY_INTERVAL)
+        if self.lottery_rewards:
+            summary = "、".join(self.lottery_rewards)
+            Log.ok(f"抽奖完毕，共中奖 {len(self.lottery_rewards)} 次：{summary}")
+        else:
+            Log.info("本次未中奖")
+
+    def _build_report(self):
+        """构建推送报告内容"""
+        items = [f"**用户**：{self.nickname}（uid={self.user_id}）"]
+        try:
+            stat = self.get_sign_stat()
+            items.append(f"**签到**：{'已签到' if stat.get('has_signed') else '未签到'} "
+                         f"连续{stat.get('month_continuous_days',0)}天 "
+                         f"累计{stat.get('total_cumulative_days',0)}天")
+        except Exception:
+            pass
+        items.append(f"**任务**：成功 {self.stats['ok']} / 跳过 {self.stats['skip']} / 失败 {self.stats['fail']}")
+        if self.lottery_rewards:
+            items.append(f"**抽奖**：共中奖 {len(self.lottery_rewards)} 次")
+            from collections import Counter
+            cnt = Counter(self.lottery_rewards)
+            for name, num in cnt.items():
+                items.append(f"  - {name} x{num}")
+        else:
+            items.append("**抽奖**：无可用次数或未中奖")
+        items.append(f"\n*执行时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+        return items
+
     def run(self):
         Log.step("WPS 自动签到 & 任务")
         if not self.check_login():
+            self.pusher.send(f"WPS账号登录失效（uid={self.user_id}）", "WPS登录失败")
             return
         try:
             if DO_SIGN_IN:
@@ -407,10 +575,20 @@ class WpsAuto:
         except Exception as e:
             Log.fail(f"任务异常：{e}")
         try:
+            self.run_lottery()
+        except Exception as e:
+            Log.fail(f"抽奖异常：{e}")
+        try:
             Log.step("执行完毕，最终签到状态")
             self.get_sign_stat()
         except Exception:
             pass
+        # 推送汇总报告
+        if DO_PUSH:
+            try:
+                self.pusher.send_report(f"WPS自动任务报告 - {self.nickname}", self._build_report())
+            except Exception as e:
+                Log.fail(f"推送异常：{e}")
         Log.ok("全部流程结束")
 
 
