@@ -2,23 +2,30 @@
 
 青龙面板（QingLong）/ 本地均可使用的 WPS 会员中心每日签到与任务自动化脚本。
 
-通过逆向分析 WPS 活动页面的前端加密逻辑与任务接口，实现**纯接口**完成签到和浏览类任务，无需浏览器自动化，稳定高效。
+通过逆向分析 WPS 活动页面的前端加密逻辑与任务接口，实现**纯接口**完成签到和多种类型任务，无需浏览器自动化，稳定高效。
 
 ## 功能特性
 
 - **每日签到** — 自动完成 WPS 会员中心每日签到，领取积分与勋章
-- **浏览任务** — 自动完成"浏览福利中心""浏览积分商城"等浏览类任务并领取奖励
-- **任务总览** — 列出全部任务及完成状态，对需手动完成的任务给出提示
+- **自适应任务引擎** — 按任务类型（task_event）+ 状态（task_status）自动选择完成策略，不硬编码任务ID，任务变更后仍能自适应处理
+- **多类型任务支持** — click/share/scan 直接 finish 完成、browse 浏览任务完整流程、exchange_traffic 换量任务自动访问
+- **待领奖自动领取** — 检测到待领奖状态（toReceive）自动领取奖励
+- **任务总览** — 列出全部任务及完成状态，对无法自动完成的任务给出提示
 - **多账号** — 支持环境变量配置多个账号，循环执行
 - **青龙适配** — 通过环境变量 `WPS_COOKIE` 注入凭据，适配青龙面板定时任务
 
 ## 已验证能力
 
-| 能力 | 状态 | 说明 |
-| --- | --- | --- |
-| 每日签到 | ✅ 可用 | RSA + AES 加密，已实测签到成功 |
-| 浏览类任务 | ✅ 可用 | start → task_info → 等待 → finish → reward 全链路实测通过 |
-| 点击/分享/开通会员类任务 | ⚠️ 需手动 | 服务端校验真实访问行为，无法纯接口绕过 |
+| 任务类型 | 策略 | 状态 | 说明 |
+| --- | --- | --- | --- |
+| 签到 | RSA+AES加密 | ✅ 可用 | 已实测签到成功 |
+| click（点击） | task_center.finish + reward | ✅ 可用 | 14个click任务实测全部完成 |
+| share（分享） | task_center.finish + reward | ✅ 可用 | 实测完成 |
+| scan（扫描） | task_center.finish + reward | ✅ 可用 | 同click机制 |
+| browse（浏览） | start → task_info → 等待 → finish → reward | ✅ 可用 | 全链路实测通过 |
+| exchange_traffic（换量） | start → 访问jump_url → finish → reward | ⚠️ 部分 | 需目标App内操作，纯接口可能失败 |
+| toReceive（待领奖） | 直接 reward | ✅ 可用 | 自动检测并领取 |
+| trade/auth/invite/subscribe | — | ❌ 需手动 | 需支付/认证/微信环境等，无法纯接口完成 |
 
 ## 快速开始
 
@@ -73,23 +80,25 @@ python3 wps_auto.py
 | --- | --- | --- | --- |
 | 账号 Cookie | `WPS_COOKIE` | 空 | 多账号用换行或 `&` 分隔 |
 | 是否签到 | — | `True` | 修改脚本 `DO_SIGN_IN` |
-| 是否做浏览任务 | — | `True` | 修改脚本 `DO_BROWSE_TASKS` |
 | 浏览等待冗余 | — | `3` 秒 | 修改脚本 `BROWSE_EXTRA_WAIT` |
+| finish后等待 | — | `3` 秒 | 修改脚本 `FINISH_DELAY`（服务端处理延迟） |
 | 请求间隔 | — | `1.5` 秒 | 修改脚本 `REQUEST_INTERVAL` |
 
 ## 运行示例
 
 ```
-[14:15:31] [*] 共 1 个账号待执行
-[14:15:31] [+] 账号登录有效，用户：昊龙（uid=255460626）
-[14:15:31] [*] 签到状态：今日已签=True 本月连续=1天 累计=1天
-[14:15:31] [+] 今日已签到，跳过
-[14:15:31] [*] 任务清单
-  ID 状态   类型             可自动  标题
-  5  已完成  browse           是     浏览福利中心10s
-  6  已完成  browse           是     浏览积分商城10s
-  ...
-[14:15:31] [!] 以下 22 个任务需手动完成（点击/分享/开通会员等无法纯接口完成）
+[15:28:39] [+] 账号登录有效，用户：昊龙（uid=255460626）
+[15:28:39] [*] 签到状态：今日已签=True 本月连续=1天 累计=1天
+[15:28:39] [+] 今日已签到，跳过
+[15:28:40] >>> 任务清单
+  ID 状态   类型               标题
+  5  已完成  browse           浏览福利中心10s
+  6  已完成  browse           浏览积分商城10s
+ 17  已完成  click            体验1次拍照扫描
+ 33  已完成  share            分享好友
+ ...
+[15:28:40] [*] 待处理任务 7 个（共 24 个）
+[15:28:50] >>> 任务完成汇总：成功 0 / 跳过 5 / 失败 2
 ```
 
 ## 实现原理
@@ -101,13 +110,20 @@ python3 wps_auto.py
 3. RSA-PKCS1v1.5 加密 AES 密钥 → 作为请求头 `token`
 4. AES-CBC（key=32字节, iv=前16字节, Pkcs7）加密 `{user_id, platform}` → 作为请求体 `extra`
 
-**浏览任务流程**（`activity-rubik/activity/component_action`）：
+**自适应任务分发**（`activity-rubik/activity/component_action`）：
 
-1. `task_center.start` 获取 `consumptionToken`
-2. `GET user/task_center/task_info` 获取浏览时长 `browse_second`
-3. 等待 `browse_second` 秒
-4. `POST user/task_center/task_finish` 提交完成
-5. `task_center.reward` 领取奖励
+脚本通过 `page_info` 接口获取任务列表，按 `task_event`（类型）和 `task_status`（状态）自动选择策略：
+
+| 状态 | 类型 | 策略 |
+| --- | --- | --- |
+| done(2) | 任意 | 跳过 |
+| toReceive(1) | 任意 | 直接 `task_center.reward` 领奖 |
+| undone(0) | click/share/scan | `task_center.finish` → 等待3s → `reward` |
+| undone(0) | browse | `start` → `task_info` → 等待 → `task_finish` → `reward` |
+| undone(0) | exchange_traffic | `start` → 访问 `jump_url+token` → `finish` → `reward` |
+| undone(0) | trade/auth/invite等 | 跳过并提示 |
+
+> 未知类型会自动尝试通用 `finish` 策略，确保新任务类型也能处理。
 
 ## 文件说明
 
@@ -123,7 +139,7 @@ QL-WPS/
 - 本脚本仅供学习交流使用，请勿用于商业用途
 - Cookie 存在有效期，失效后需重新获取
 - 请勿将含真实 Cookie 的脚本提交到公开仓库（本仓库脚本默认从环境变量读取，不硬编码凭据）
-- 点击/分享/开通会员等任务需在 WPS 客户端内真实操作，服务端会校验访问行为，无法通过纯接口完成
+- 点击/分享/扫描类任务已支持自动完成（通过 `task_center.finish` 接口），开通会员/学生认证/邀请好友等任务需手动操作
 - 建议每日执行一次，频繁请求可能触发风控
 
 ## 依赖
