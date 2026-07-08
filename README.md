@@ -1,371 +1,233 @@
-# QL-WPS · WPS 会员中心自动签到 & 任务 & 抽奖 & QQ 机器人管理
+# QQ 机器人插件化框架 · 以 WPS 为例
 
-青龙面板（QingLong）/ 本地均可使用的 WPS 会员中心自动化脚本，支持签到、任务、抽奖、消息推送，以及基于 **NapCatQQ 插件化框架** 的 QQ 机器人交互式管理。仓库内同时保留了早期的 Telegram 机器人文件作为备用。
+> 一个基于 NapCatQQ 反向 WebSocket 的通用 QQ 机器人框架。后续新增项目只需在 `bot/plugins/` 下写一个插件文件即可，不需要重复部署机器人服务。
 
-通过逆向分析 WPS 活动页面的前端加密逻辑与任务接口，实现**纯接口**完成签到、多种类型任务和自动抽奖，无需浏览器自动化，稳定高效。
+## 架构设计
 
-## 功能特性
-
-- **每日签到** — 自动完成 WPS 会员中心每日签到，领取积分与勋章
-- **自适应任务引擎** — 按任务类型（task_event）+ 状态（task_status）自动选择完成策略，不硬编码任务ID，任务变更后仍能自适应处理
-- **多类型任务支持** — click/share/scan 直接 finish 完成、browse 浏览任务完整流程、exchange_traffic 换量任务自动访问
-- **待领奖自动领取** — 检测到待领奖状态（toReceive）自动领取奖励
-- **自动抽奖** — 自动消耗所有可用抽奖次数，执行九宫格抽奖，汇总中奖结果
-- **WXPusher 推送** — 执行完毕后推送汇总报告到微信（签到状态、任务统计、中奖明细）
-- **多账号** — 支持环境变量配置多个账号，循环执行
-- **青龙适配** — 通过环境变量注入凭据，适配青龙面板定时任务
-- **QQ 机器人（NapCatQQ，插件化）** — 通过 QQ 群 @机器人 完成登录/查询/管理/立即执行，账号名自动从 WPS 获取，45 秒登录超时
-- **Telegram 机器人（备用）** — `tg_bot.py`，提供与 QQ 机器人相似的交互能力
-
-## 已验证能力
-
-| 功能 | 策略 | 状态 | 说明 |
-| --- | --- | --- | --- |
-| 签到 | RSA+AES加密 | ✅ 可用 | 已实测签到成功 |
-| click（点击） | task_center.finish + reward | ✅ 可用 | 14个click任务实测全部完成 |
-| share（分享） | task_center.finish + reward | ✅ 可用 | 实测完成 |
-| scan（扫描） | task_center.finish + reward | ✅ 可用 | 同click机制 |
-| browse（浏览） | start → task_info → 等待 → finish → reward | ✅ 可用 | 全链路实测通过 |
-| exchange_traffic（换量） | start → 访问jump_url → finish → reward | ⚠️ 部分 | 需目标App内操作，纯接口可能失败 |
-| toReceive（待领奖） | 直接 reward | ✅ 可用 | 自动检测并领取 |
-| **自动抽奖** | lottery_v2.exec | ✅ 可用 | 10次实测全部中奖（1积分/3积分） |
-| **WXPusher 推送** | /api/send/message | ✅ 可用 | markdown格式汇总报告推送到微信 |
-| **Telegram Bot** | python-telegram-bot | ✅ 可用 | 支持登录/查询/管理/执行 |
-| **QQ Bot** | NapCatQQ + 反向 WS | ✅ 可用 | 插件化，支持群 @ 交互 |
-| trade/auth/invite/subscribe | — | ❌ 需手动 | 需支付/认证/微信环境等，无法纯接口完成 |
-
-## 快速开始
-
-### 1. 安装依赖
-
-```bash
-pip install -r requirements.txt
+```text
+┌─────────────┐     反向 WS      ┌──────────────┐     插件分发      ┌─────────────┐
+│   QQ 用户    │ ───────────────> │   QQ 机器人核心  │ ─────────────> │ WPS/其他插件  │
+│ （群里 @机器人）│                  │  main.py     │                │             │
+└─────────────┘                  └──────────────┘                └──────┬──────┘
+                                                                         │
+                                                                         v
+                                                                  ┌─────────────┐
+                                                                  │ 青龙 Open API │
+                                                                  │ 环境变量管理  │
+                                                                  └─────────────┘
 ```
 
-### 2. 配置 Cookie
-
-脚本通过环境变量 `WPS_COOKIE` 读取账号 Cookie（推荐），也可直接编辑脚本中的 `DEFAULT_COOKIE`。
-
-```bash
-# 单账号
-export WPS_COOKIE="你的WPS账号Cookie"
-
-# 多账号（用换行或 & 分隔）
-export WPS_COOKIE="账号1的Cookie
-账号2的Cookie"
-```
-
-### 3. 运行签到脚本
-
-```bash
-python3 wps_auto.py
-```
-
-## 获取 Cookie
-
-1. 浏览器访问 [WPS 个人中心](https://account.wps.cn) 并登录
-2. 按 `F12` 打开开发者工具，切换到 **Network** 标签
-3. 刷新页面，点击任意一个请求
-4. 在 **Request Headers** 中找到 `Cookie` 字段，复制完整值
-
-> Cookie 中关键字段为 `wps_sid`、`kso_sid`、`csrf`、`uid`，缺一不可。
-
-## WXPusher 推送配置（可选）
-
-启用后，脚本执行完毕会自动推送汇总报告到微信，包含签到状态、任务统计、中奖明细。
-
-1. 访问 [WxPusher 后台](https://wxpusher.zjiecode.com/admin/)，微信扫码登录
-2. 创建应用，获取 `appToken`
-3. 关注公众号「wxpusher」，在「我的 → 我的UID」获取 `uid`
-4. 配置环境变量：
-   ```bash
-   export WXPUSHER_APP_TOKEN="AT_xxxxxxxx"
-   export WXPUSHER_UID="UID_xxxxxxxx"
-   ```
-5. 不配置则不推送，仅控制台输出
-
-## 青龙面板部署
-
-1. **添加脚本**：在青龙面板「脚本管理」中拉取本仓库，或手动上传 `wps_auto.py`
-2. **安装依赖**：在「依赖管理 → Python」中添加 `requests`、`pycryptodome`
-3. **配置环境变量**：在「环境变量」中新增
-   - `WPS_COOKIE`：WPS 账号 Cookie（多账号换行或用 `&` 分隔）
-   - `WXPUSHER_APP_TOKEN`：WxPusher 应用 Token（可选，用于推送通知）
-   - `WXPUSHER_UID`：WxPusher 用户 UID（可选，用于推送通知）
-4. **创建定时任务**：
-   - 命令：`task wps_auto.py`（青龙）或 `python3 wps_auto.py`
-   - 定时规则：`30 8 * * *`（每天 8:30 执行）
-
-## Telegram 机器人（备用方案）
-
-通过 Telegram Bot 与青龙联动，实现“粘贴 Cookie → 自动验证 → 自动写入青龙环境变量”的完整流程。
-
-### 机器人命令
-
-| 命令 | 说明 |
-| --- | --- |
-| `/start` | 欢迎与帮助 |
-| `/help` | 查看使用帮助 |
-| `/wps_login` | 提交/更新 WPS Cookie 到青龙环境变量 |
-| `/wps_query` | 查询 WPS 账号状态、签到、任务、抽奖次数 |
-| `/wps_manage` | 查看青龙环境变量中的 WPS_COOKIE |
-| `/wps_exec` | 立即执行一次 `wps_auto.py` 签到任务 |
-| `/cancel` | 取消当前会话 |
-
-### 机器人环境变量
-
-```bash
-export BOT_TOKEN="你的 Telegram Bot Token"
-export ALLOWED_USER_IDS="123456789,987654321"  # 可选，限制可使用的用户 ID
-export QL_URL="http://127.0.0.1:5700"          # 青龙面板地址
-export QL_CLIENT_ID="你的青龙应用 client_id"
-export QL_CLIENT_SECRET="你的青龙应用 client_secret"
-```
-
-### 启动机器人
-
-```bash
-python3 tg_bot.py
-```
-
-### 使用流程
-
-```
-用户：/wps_login
-机器人：🍪 请输入你的 WPS Cookie（支持多账号，用换行或 & 分隔）：
-        提示：45 秒内未输入将自动取消。
-
-用户：<粘贴 Cookie>
-机器人：🔍 正在验证 WPS Cookie 并获取账号信息...
-机器人：✅ WPS 验证成功：xxx（uid=12345678）
-        🚀 正在提交到青龙环境变量 WPS_COOKIE...
-机器人：🎉 登录成功并已提交到青龙！
-        👤 账号：xxx
-        🆔 uid：12345678
-        📦 环境变量：WPS_COOKIE
-        ⏰ 时间：2025-07-08 10:00:00
-        你可以使用 /wps_query 查询状态，/wps_exec 立即执行任务。
-```
-
-### 群聊使用
-
-- 第一次需要 `@机器人 wps登录` 唤醒机器人
-- 进入登录会话后，45 秒内直接粘贴 Cookie 即可，无需重复 `@`
-- 其他命令如 `@机器人 wps查询`、`@机器人 wps执行` 也可通过 @ 触发
-- 如果机器人在群里不响应没有 @ 的消息，请至 @BotFather 关闭该机器人的 **Privacy Mode**：
-  `/setprivacy` → 选择你的机器人 → `Disable`
-
-### 青龙 Client ID 如何获取
-
-青龙 `client_id` 和 `client_secret` 需要在青龙面板中创建一个**应用**来获取：
-
-1. 登录青龙面板
-2. 进入「系统设置」→「应用设置」
-3. 点击「新建应用」
-4. 名称任意，例如 `ql-wps-bot`
-5. **权限勾选「环境变量」**
-6. 保存后复制 `client_id` 和 `client_secret`
-7. 填入机器人的 `QL_CLIENT_ID` 和 `QL_CLIENT_SECRET` 环境变量
-
-> 一个应用对应一组 `client_id`/`client_secret`，名称可以自定义，只要权限包含环境变量即可。
-
-## QQ 机器人（NapCatQQ，插件化框架，按流程图实现）
-
-基于 NapCatQQ 反向 WebSocket 的通用 QQ 机器人框架。WPS 管理已实现为插件 `bot/plugins/wps.py`，新增项目只需在 `bot/plugins/` 下写一个 Python 文件即可。
-
-### 目录结构
+## 目录结构
 
 ```text
 .
-├── main.py                 # QQ 机器人启动入口
+├── main.py                 # 机器人启动入口
+├── wps_auto.py             # WPS 自动签到脚本
+├── requirements.txt        # Python 依赖
+├── .env.example            # 环境变量模板
+├── wps-bot.service         # systemd 服务模板
 ├── bot/
 │   ├── config.py           # 配置管理
 │   ├── core.py             # 核心：WS 服务、插件加载、消息分发
 │   ├── utils.py            # 日志、消息发送、文本清理
 │   ├── ql_api.py           # 青龙 API 封装
-│   ├── wps_api.py          # WPS 信息查询/验证（只读）
 │   ├── session.py          # 用户会话状态管理
 │   └── plugins/
 │       ├── base.py         # 插件基类
-│       ├── wps.py          # WPS 账号管理插件
+│       ├── wps.py          # WPS 账号管理插件（示例）
 │       └── example.py      # 新增插件参考示例
 ```
 
-### 启动
+## 快速部署
+
+### 1. 下载代码
+
+```bash
+mkdir -p /opt/qq-bot
+cd /opt/qq-bot
+
+curl -O https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/main.py
+curl -O https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/wps_auto.py
+curl -O https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/requirements.txt
+curl -O https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/.env.example
+curl -O https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/wps-bot.service
+
+mkdir -p bot/plugins
+curl -o bot/__init__.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/__init__.py
+curl -o bot/config.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/config.py
+curl -o bot/core.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/core.py
+curl -o bot/utils.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/utils.py
+curl -o bot/ql_api.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/ql_api.py
+curl -o bot/session.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/session.py
+curl -o bot/plugins/__init__.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/plugins/__init__.py
+curl -o bot/plugins/base.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/plugins/base.py
+curl -o bot/plugins/wps.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/plugins/wps.py
+curl -o bot/plugins/example.py https://raw.githubusercontent.com/Hayfan-wu/QL-WPS/main/bot/plugins/example.py
+```
+
+### 2. 安装依赖
+
+```bash
+pip install requests pycryptodome websockets --break-system-packages
+```
+
+### 3. 配置环境变量
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+关键配置：
+
+```text
+QQ_BOT_QQ=机器人QQ号
+NAPCAT_API=http://服务器IP:3000
+NAPCAT_TOKEN=napcat_token
+QL_URL=http://127.0.0.1:5700
+QL_CLIENT_ID=青龙ClientID
+QL_CLIENT_SECRET=青龙ClientSecret
+ADMIN_QQ=你的QQ号
+```
+
+### 4. 配置 NapCat 反向 WebSocket
+
+NapCat WebUI → 网络配置 → OneBot 11 → 新建 **Websocket客户端**：
+
+```text
+名称：qq-bot
+启用：是
+主机：127.0.0.1
+端口：8080
+路径：/onebot/v11/ws/
+消息上报格式：string
+```
+
+重启 NapCat：
+
+```bash
+docker restart napcat
+```
+
+### 5. 启动机器人
 
 ```bash
 export $(cat .env | grep -v '^#' | xargs)
-python3 main.py
+nohup python3 main.py > bot.log 2>&1 &
 ```
 
-### 交互流程（按流程图实现）
+查看日志：
+
+```bash
+tail -f bot.log
+```
+
+## 交互流程
+
+### WPS 登录
 
 ```text
-用户：@机器人 WPS登录
-机器人：🍪 请输入你的 WPS Cookie（支持多账号，多个 Cookie 用 & 分隔）：
-        提示：45 秒内未输入将自动取消。
-
-用户：<粘贴 Cookie>
-机器人：🔍 正在验证 WPS Cookie 并获取账号信息...
-机器人：🎉 登录成功！
-        👤 账号：xxx
-        🆔 uid：12345678
-        📦 已保存到青龙环境变量：WPS_COOKIE
-        ⏰ 时间：2025-07-08 10:00:00
-        可发送「WPS查询」查看状态，「WPS执行」立即签到。
+用户：@机器人 账号:wps 登录
+机器人：请输入账号备注，例如：账号1
+用户：账号1
+机器人：请输入账号 [账号1] 的 Cookie
+用户：sid=xxxxx;wpsid=xxxxx
+机器人：✅ 新增账号 [账号1] 成功，已保存到青龙环境变量
 ```
 
-### 交互命令
+### 其他命令
 
-| 命令 | 说明 |
-| --- | --- |
-| `@机器人 WPS登录` | 交互式登录，45 秒内粘贴 Cookie |
-| `@机器人 WPS登录 <cookie>` | 一键登录 |
-| `@机器人 WPS查询` | 查询 WPS 账号状态、签到、任务、抽奖 |
-| `@机器人 WPS执行` | 立即执行一次 `wps_auto.py` 签到任务 |
-| `@机器人 WPS管理` | 查看当前 WPS_COOKIE 信息 |
-| `@机器人 WPS管理 登出` | 删除 WPS_COOKIE 环境变量 |
-| `@机器人 WPS列表` | 同 WPS管理 |
-| `@机器人 帮助` | 显示命令列表 |
-
-### 设计要点
-
-- **单一环境变量**：Cookie 保存到 `WPS_COOKIE`，与 `wps_auto.py` 保持一致，多账号用 `&` 分隔
-- **账号名自动获取**：登录时自动调用 WPS 接口获取昵称和 uid，无需手动填写账号备注
-- **45 秒登录超时**：登录会话 45 秒无响应自动取消
-- **插件化扩展**：参考 `bot/plugins/example.py`，新增项目只需写一个插件类
-
-详细部署步骤可参考 `.env.example` 和 `wps-bot.service`。
-
-## 配置项
-
-| 配置 | 环境变量 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| 账号 Cookie | `WPS_COOKIE` | 空 | 多账号用换行或 `&` 分隔 |
-| WxPusher Token | `WXPUSHER_APP_TOKEN` | 空 | 推送应用 Token |
-| WxPusher UID | `WXPUSHER_UID` | 空 | 推送用户 UID |
-| Telegram Bot Token | `BOT_TOKEN` | 空 | Telegram Bot Token |
-| Telegram 允许用户 | `ALLOWED_USER_IDS` | 空 | 可选，逗号分隔用户 ID |
-| QQ 机器人 QQ 号 | `QQ_BOT_QQ` | 空 | 用于识别群 @ 消息 |
-| QQ 管理员 | `ADMIN_QQ` | 空 | 可选，逗号分隔 QQ 号 |
-| 青龙地址 | `QL_URL` | 空 | 青龙面板地址 |
-| 青龙 Client ID | `QL_CLIENT_ID` | 空 | 青龙应用 client_id |
-| 青龙 Secret | `QL_CLIENT_SECRET` | 空 | 青龙应用 client_secret |
-| 是否签到 | — | `True` | 修改脚本 `DO_SIGN_IN` |
-| 是否抽奖 | — | `True` | 修改脚本 `DO_LOTTERY` |
-| 浏览等待冗余 | — | `3` 秒 | 修改脚本 `BROWSE_EXTRA_WAIT` |
-| finish后等待 | — | `3` 秒 | 修改脚本 `FINISH_DELAY` |
-| 抽奖间隔 | — | `2` 秒 | 修改脚本 `LOTTERY_INTERVAL` |
-| 请求间隔 | — | `1.5` 秒 | 修改脚本 `REQUEST_INTERVAL` |
-
-## 运行示例
-
-```
-[15:28:39] [+] 账号登录有效，用户：昊龙（uid=255460626）
-[15:28:39] [*] 签到状态：今日已签=True 本月连续=1天 累计=1天
-[15:28:39] [+] 今日已签到，跳过
-[15:28:40] >>> 任务清单
-  ID 状态   类型               标题
-  5  已完成  browse           浏览福利中心10s
-  6  已完成  browse           浏览积分商城10s
- 17  已完成  click            体验1次拍照扫描
- 33  已完成  share            分享好友
- ...
-[15:28:40] [*] 待处理任务 7 个（共 24 个）
-[15:28:50] >>> 任务完成汇总：成功 0 / 跳过 5 / 失败 2
-[15:28:51] >>> 开始自动抽奖
-[15:28:51] [*] 当前积分：42
-[15:28:51] [*] 场次 2：剩余 10 次，类型=次数抽奖
-[15:28:53] [+] 第 1/10 次抽奖：中奖 1积分（integral）
-[15:28:55] [+] 第 2/10 次抽奖：中奖 3积分（integral）
-...
-[15:29:15] [+] 抽奖完毕，共中奖 10 次：1积分、3积分、1积分...
+```text
+@机器人 WPS登录 账号1 cookie内容      # 一键登录
+@机器人 WPS查询 账号1                 # 查询账号状态
+@机器人 WPS列表                       # 列出所有账号
+@机器人 WPS管理 登出 账号1            # 删除账号
+@机器人 帮助                          # 显示命令列表
 ```
 
-## 实现原理
+## 如何新增项目（核心）
 
-**签到加密流程**（`personal-bus.wps.cn/sign_in/v1/sign_in`）：
+不需要改动机器人核心代码，只需在 `bot/plugins/` 下新建一个 Python 文件。
 
-1. `GET /encrypt/key` 获取 RSA 公钥（PKCS#1 格式）
-2. 生成 32 字符 AES 密钥（22 位随机字符 + 10 位时间戳）
-3. RSA-PKCS1v1.5 加密 AES 密钥 → 作为请求头 `token`
-4. AES-CBC（key=32字节, iv=前16字节, Pkcs7）加密 `{user_id, platform}` → 作为请求体 `extra`
+### 示例：新增一个「天气查询」插件
 
-**自适应任务分发**（`activity-rubik/activity/component_action`）：
+创建 `bot/plugins/weather.py`：
 
-脚本通过 `page_info` 接口获取任务列表，按 `task_event`（类型）和 `task_status`（状态）自动选择策略：
+```python
+import re
+import requests
+from bot.plugins.base import Plugin
 
-| 状态 | 类型 | 策略 |
-| --- | --- | --- |
-| done(2) | 任意 | 跳过 |
-| toReceive(1) | 任意 | 直接 `task_center.reward` 领奖 |
-| undone(0) | click/share/scan | `task_center.finish` → 等待3s → `reward` |
-| undone(0) | browse | `start` → `task_info` → 等待 → `task_finish` → `reward` |
-| undone(0) | exchange_traffic | `start` → 访问 `jump_url+token` → `finish` → `reward` |
-| undone(0) | trade/auth/invite等 | 跳过并提示 |
 
-> 未知类型会自动尝试通用 `finish` 策略，确保新任务类型也能处理。
+class WeatherPlugin(Plugin):
+    name = 'weather'
+    commands = [
+        '天气',
+        re.compile(r'^天气\s+', re.IGNORECASE),
+    ]
 
-**自动抽奖流程**（`activity-rubik/activity/component_action`）：
-
-1. `GET page_info` 获取抽奖组件 `lottery_v2` 数据（场次、剩余次数、积分）
-2. 遍历 `IN_PROGRESS` 且 `times > 0` 的场次
-3. `POST component_action` body=`{component_action: "lottery_v2.exec", lottery_v2: {session_id}}` 执行抽奖
-4. 解析返回的 `reward_name`、`reward_type`，汇总中奖结果
-5. 遇到 error_code 10005（次数用完）或 10007（达到最大中奖数）自动停止
-
-**WXPusher 推送**（`wxpusher.zjiecode.com/api/send/message`）：
-
-脚本执行完毕后，通过 WXPusher HTTP API 推送 markdown 格式汇总报告，包含签到状态、任务统计、中奖明细。
-
-## 文件说明
-
-```
-QL-WPS/
-├── wps_auto.py       # 主脚本（签到/任务/抽奖/推送）
-├── main.py           # QQ 机器人启动入口
-├── bot/              # QQ 机器人插件化框架
-│   ├── config.py
-│   ├── core.py
-│   ├── utils.py
-│   ├── ql_api.py     # 青龙 API 封装（插件使用）
-│   ├── wps_api.py    # WPS 信息查询/验证（插件使用）
-│   ├── session.py
-│   └── plugins/
-│       ├── base.py
-│       ├── wps.py    # WPS 管理插件（按流程图实现）
-│       └── example.py
-├── .env.example      # 环境变量模板（QQ + 青龙 + WXPusher）
-├── wps-bot.service   # QQ 机器人 systemd 服务模板
-├── requirements.txt  # Python 依赖
-└── README.md         # 说明文档
+    def handle(self, text, sender_id, group_id=None):
+        city = text.replace('天气', '').strip()
+        if not city:
+            return '请输入城市，例如：天气 北京'
+        # 这里调用天气 API
+        return f'{city} 今天晴，25℃'
 ```
 
-### 冗余文件说明
+重启机器人后，群里发送 `@机器人 天气 北京` 就会返回结果。
 
-如果你只使用 QQ 机器人插件化架构，以下文件可以忽略或删除：
+### 插件开发规范
 
-| 文件 | 说明 |
-| --- | --- |
-| `tg_bot.py` | Telegram 机器人，与 QQ 架构重复 |
-| `wps_query.py` | WPS 查询功能已合并到 `bot/wps_api.py` |
-| `qinglong_api.py` | 青龙 API 已合并到 `bot/ql_api.py` |
-| `wps_bot.py` | 早期单文件 QQ 机器人，已被 `bot/` 插件框架替代 |
+1. 继承 `Plugin` 基类
+2. 设置 `name`（唯一标识）和 `commands`（触发前缀）
+3. 实现 `handle(text, sender_id, group_id)` 方法
+4. 返回字符串即自动回复，返回 None 则不回复
+5. 需要多轮交互时，使用 `bot.session.sessions` 保存会话状态
 
-## 注意事项
+## WPS 签到脚本
 
-- 本脚本仅供学习交流使用，请勿用于商业用途
-- Cookie 存在有效期，失效后需重新获取
-- 请勿将含真实 Cookie 的脚本提交到公开仓库（本仓库脚本默认从环境变量读取，不硬编码凭据）
-- 点击/分享/扫描类任务已支持自动完成（通过 `task_center.finish` 接口），开通会员/学生认证/邀请好友等任务需手动操作
-- 建议每日执行一次，频繁请求可能触发风控
-- Telegram 机器人如需在群聊中接收无 @ 的消息，必须关闭 Privacy Mode
-- QQ 机器人需要在 NapCat 中配置反向 WebSocket
+`wps_auto.py` 是青龙定时任务脚本，会读取所有 `WPS_COOKIE_账号备注` 环境变量执行签到，并通过 QQ 推送结果。
 
-## 依赖
+青龙环境变量配置：
 
-- Python 3.8+
-- `requests`
-- `pycryptodome`
-- `python-telegram-bot`
-- `websockets`
+```text
+QQ_BOT_API=http://服务器IP:3000/send_group_msg
+QQ_BOT_TOKEN=napcat_token
+QQ_GROUP_ID=群号
+```
+
+定时任务：
+
+```text
+命令：task wps_auto.py
+定时：30 8 * * *
+```
+
+## 常见问题
+
+### 群里 @ 机器人无反应
+
+1. 检查 `.env` 中 `QQ_BOT_QQ` 是否配置正确
+2. 检查 NapCat 是否已连接：`tail -f bot.log` 应显示 `NapCat 已连接`
+3. 检查 NapCat 中是否配置了 **Websocket客户端** 指向 `127.0.0.1:8080`
+4. 检查 `ADMIN_QQ` 是否限制了发送者
+
+### 插件加载失败
+
+```bash
+tail -f bot.log
+```
+
+查看具体插件加载错误，通常是文件语法问题或依赖缺失。
+
+### Cookie 保存失败
+
+1. 检查青龙应用权限是否包含「环境变量」
+2. 检查 `QL_CLIENT_ID` 和 `QL_CLIENT_SECRET` 是否正确
+
+## 安全提醒
+
+- 使用 QQ 小号跑机器人
+- `ADMIN_QQ` 建议只填自己的 QQ 号
+- Cookie 等敏感信息不要发在公开群
+- 青龙应用只授予「环境变量」权限
