@@ -15,6 +15,14 @@ from bot.utils import Log, normalize_text, send_qq_message
 from bot.plugins.base import Plugin
 
 
+# 导入 WPS 插件的会话处理函数
+# 用于处理 waiting_cookie 状态下的 Cookie 粘贴
+try:
+    from bot.plugins.wps import handle_session as wps_handle_session
+except Exception:
+    wps_handle_session = None
+
+
 class BotCore:
     def __init__(self):
         self.plugins = []
@@ -51,6 +59,19 @@ class BotCore:
         session = sessions.get(sender_id, group_id)
         if session:
             plugin_name = session.get('plugin')
+
+            # WPS 登录会话特殊处理：waiting_cookie 状态时直接接收 Cookie
+            if plugin_name == 'wps' and wps_handle_session:
+                try:
+                    reply = wps_handle_session(text, sender_id, group_id, session)
+                    if reply:
+                        send_qq_message(reply, user_id=sender_id, group_id=group_id)
+                    return
+                except Exception as e:
+                    Log.fail(f'WPS 会话处理失败: {e}')
+                    send_qq_message(f'处理失败: {str(e)}', user_id=sender_id, group_id=group_id)
+                    return
+
             for plugin in self.plugins:
                 if plugin.name == plugin_name:
                     try:

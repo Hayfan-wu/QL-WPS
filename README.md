@@ -1,6 +1,6 @@
-# QL-WPS · WPS 会员中心自动签到 & 任务 & 抽奖 & 机器人管理
+# QL-WPS · WPS 会员中心自动签到 & 任务 & 抽奖 & QQ 机器人管理
 
-青龙面板（QingLong）/ 本地均可使用的 WPS 会员中心自动化脚本，支持签到、任务、抽奖、消息推送，以及 **Telegram 机器人** 和 **QQ 机器人** 两种交互式管理方式。
+青龙面板（QingLong）/ 本地均可使用的 WPS 会员中心自动化脚本，支持签到、任务、抽奖、消息推送，以及基于 **NapCatQQ 插件化框架** 的 QQ 机器人交互式管理。仓库内同时保留了早期的 Telegram 机器人文件作为备用。
 
 通过逆向分析 WPS 活动页面的前端加密逻辑与任务接口，实现**纯接口**完成签到、多种类型任务和自动抽奖，无需浏览器自动化，稳定高效。
 
@@ -14,8 +14,8 @@
 - **WXPusher 推送** — 执行完毕后推送汇总报告到微信（签到状态、任务统计、中奖明细）
 - **多账号** — 支持环境变量配置多个账号，循环执行
 - **青龙适配** — 通过环境变量注入凭据，适配青龙面板定时任务
-- **Telegram 机器人** — 通过 TG Bot 提交 Cookie、查询状态、管理青龙变量、立即执行任务，45 秒会话超时
-- **QQ 机器人（NapCatQQ）** — 通过 QQ 群 @机器人 完成登录/查询/管理，插件化架构便于扩展
+- **QQ 机器人（NapCatQQ，插件化）** — 通过 QQ 群 @机器人 完成登录/查询/管理/立即执行，账号名自动从 WPS 获取，45 秒登录超时
+- **Telegram 机器人（备用）** — `tg_bot.py`，提供与 QQ 机器人相似的交互能力
 
 ## 已验证能力
 
@@ -96,7 +96,7 @@ python3 wps_auto.py
    - 命令：`task wps_auto.py`（青龙）或 `python3 wps_auto.py`
    - 定时规则：`30 8 * * *`（每天 8:30 执行）
 
-## Telegram 机器人（推荐，按流程图实现）
+## Telegram 机器人（备用方案）
 
 通过 Telegram Bot 与青龙联动，实现“粘贴 Cookie → 自动验证 → 自动写入青龙环境变量”的完整流程。
 
@@ -169,9 +169,9 @@ python3 tg_bot.py
 
 > 一个应用对应一组 `client_id`/`client_secret`，名称可以自定义，只要权限包含环境变量即可。
 
-## QQ 机器人（NapCatQQ，插件化框架）
+## QQ 机器人（NapCatQQ，插件化框架，按流程图实现）
 
-基于 NapCatQQ 反向 WebSocket 的通用 QQ 机器人框架。除了 WPS 管理外，还可以在 `bot/plugins/` 下新增插件文件来扩展功能。
+基于 NapCatQQ 反向 WebSocket 的通用 QQ 机器人框架。WPS 管理已实现为插件 `bot/plugins/wps.py`，新增项目只需在 `bot/plugins/` 下写一个 Python 文件即可。
 
 ### 目录结构
 
@@ -183,6 +183,7 @@ python3 tg_bot.py
 │   ├── core.py             # 核心：WS 服务、插件加载、消息分发
 │   ├── utils.py            # 日志、消息发送、文本清理
 │   ├── ql_api.py           # 青龙 API 封装
+│   ├── wps_api.py          # WPS 信息查询/验证（只读）
 │   ├── session.py          # 用户会话状态管理
 │   └── plugins/
 │       ├── base.py         # 插件基类
@@ -197,16 +198,42 @@ export $(cat .env | grep -v '^#' | xargs)
 python3 main.py
 ```
 
-### 交互命令
+### 交互流程（按流程图实现）
 
 ```text
-@机器人 账号:wps 登录          # 交互式登录
-@机器人 WPS登录 账号1 cookie  # 一键登录
-@机器人 WPS查询 账号1          # 查询账号
-@机器人 WPS列表                # 列出所有账号
-@机器人 WPS管理 登出 账号1     # 删除账号
-@机器人 帮助                   # 显示命令列表
+用户：@机器人 WPS登录
+机器人：🍪 请输入你的 WPS Cookie（支持多账号，多个 Cookie 用 & 分隔）：
+        提示：45 秒内未输入将自动取消。
+
+用户：<粘贴 Cookie>
+机器人：🔍 正在验证 WPS Cookie 并获取账号信息...
+机器人：🎉 登录成功！
+        👤 账号：xxx
+        🆔 uid：12345678
+        📦 已保存到青龙环境变量：WPS_COOKIE
+        ⏰ 时间：2025-07-08 10:00:00
+        可发送「WPS查询」查看状态，「WPS执行」立即签到。
 ```
+
+### 交互命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `@机器人 WPS登录` | 交互式登录，45 秒内粘贴 Cookie |
+| `@机器人 WPS登录 <cookie>` | 一键登录 |
+| `@机器人 WPS查询` | 查询 WPS 账号状态、签到、任务、抽奖 |
+| `@机器人 WPS执行` | 立即执行一次 `wps_auto.py` 签到任务 |
+| `@机器人 WPS管理` | 查看当前 WPS_COOKIE 信息 |
+| `@机器人 WPS管理 登出` | 删除 WPS_COOKIE 环境变量 |
+| `@机器人 WPS列表` | 同 WPS管理 |
+| `@机器人 帮助` | 显示命令列表 |
+
+### 设计要点
+
+- **单一环境变量**：Cookie 保存到 `WPS_COOKIE`，与 `wps_auto.py` 保持一致，多账号用 `&` 分隔
+- **账号名自动获取**：登录时自动调用 WPS 接口获取昵称和 uid，无需手动填写账号备注
+- **45 秒登录超时**：登录会话 45 秒无响应自动取消
+- **插件化扩展**：参考 `bot/plugins/example.py`，新增项目只需写一个插件类
 
 详细部署步骤可参考 `.env.example` 和 `wps-bot.service`。
 
@@ -296,25 +323,34 @@ python3 main.py
 ```
 QL-WPS/
 ├── wps_auto.py       # 主脚本（签到/任务/抽奖/推送）
-├── tg_bot.py         # Telegram 机器人
-├── wps_query.py      # WPS 信息查询模块（只读，供 tg_bot 使用）
-├── qinglong_api.py   # 青龙面板 Open API 封装（供 tg_bot 使用）
 ├── main.py           # QQ 机器人启动入口
 ├── bot/              # QQ 机器人插件化框架
 │   ├── config.py
 │   ├── core.py
 │   ├── utils.py
-│   ├── ql_api.py
+│   ├── ql_api.py     # 青龙 API 封装（插件使用）
+│   ├── wps_api.py    # WPS 信息查询/验证（插件使用）
 │   ├── session.py
 │   └── plugins/
 │       ├── base.py
-│       ├── wps.py
+│       ├── wps.py    # WPS 管理插件（按流程图实现）
 │       └── example.py
-├── .env.example      # 环境变量模板（包含 Telegram + QQ + 青龙）
+├── .env.example      # 环境变量模板（QQ + 青龙 + WXPusher）
 ├── wps-bot.service   # QQ 机器人 systemd 服务模板
 ├── requirements.txt  # Python 依赖
 └── README.md         # 说明文档
 ```
+
+### 冗余文件说明
+
+如果你只使用 QQ 机器人插件化架构，以下文件可以忽略或删除：
+
+| 文件 | 说明 |
+| --- | --- |
+| `tg_bot.py` | Telegram 机器人，与 QQ 架构重复 |
+| `wps_query.py` | WPS 查询功能已合并到 `bot/wps_api.py` |
+| `qinglong_api.py` | 青龙 API 已合并到 `bot/ql_api.py` |
+| `wps_bot.py` | 早期单文件 QQ 机器人，已被 `bot/` 插件框架替代 |
 
 ## 注意事项
 
