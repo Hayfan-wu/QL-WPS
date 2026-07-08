@@ -1,12 +1,12 @@
 [Unit]
-Description=WPS QQ Bot Service
+Description=QQ Bot Service
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/wps-bot
-EnvironmentFile=/opt/wps-bot/.env
-ExecStart=/usr/bin/python3 /opt/wps-bot/wps_bot.py
+WorkingDirectory=/opt/qq-bot
+EnvironmentFile=/opt/qq-bot/.env
+ExecStart=/usr/bin/python3 /opt/qq-bot/main.py
 Restart=always
 RestartSec=10
 
