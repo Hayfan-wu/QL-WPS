@@ -87,6 +87,17 @@ WXPUSHER_APP_TOKEN = os.getenv("WXPUSHER_APP_TOKEN", "")
 WXPUSHER_UID = os.getenv("WXPUSHER_UID", "")
 # 推送开关
 DO_PUSH = bool(WXPUSHER_APP_TOKEN and WXPUSHER_UID)
+
+# ====== QQ 机器人通知配置（配合 NapCatQQ） ======
+# NapCat HTTP API 地址，例如 http://127.0.0.1:3000
+QQ_BOT_API = os.getenv("QQ_BOT_API", "")
+# NapCat Access Token（如果配置了）
+QQ_BOT_TOKEN = os.getenv("QQ_BOT_TOKEN", "")
+# 发送目标：群号或 QQ 号（二选一）
+QQ_GROUP_ID = os.getenv("QQ_GROUP_ID", "")
+QQ_USER_ID = os.getenv("QQ_USER_ID", "")
+# QQ 通知开关
+DO_QQ_PUSH = bool(QQ_BOT_API and (QQ_GROUP_ID or QQ_USER_ID))
 # ======================== 配置区结束 ========================
 
 # 任务状态枚举
@@ -181,6 +192,51 @@ class WxPusher:
         return self.send(content, summary=title, content_type=3)
 
 
+# ----------------------- QQ 机器人通知 -----------------------
+class QQBot:
+    """NapCatQQ 机器人消息推送"""
+
+    def __init__(self, api_url, token, group_id, user_id):
+        self.api_url = api_url.rstrip('/') if api_url else ''
+        self.token = token
+        self.group_id = group_id
+        self.user_id = user_id
+        self.enabled = bool(api_url and (group_id or user_id))
+
+    def send(self, message):
+        if not self.enabled:
+            return False
+        headers = {'Content-Type': 'application/json'}
+        if self.token:
+            headers['Authorization'] = f'Bearer {self.token}'
+        if self.group_id:
+            url = f'{self.api_url}/send_group_msg'
+            payload = {'group_id': int(self.group_id), 'message': message}
+        else:
+            url = f'{self.api_url}/send_private_msg'
+            payload = {'user_id': int(self.user_id), 'message': message}
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
+            d = r.json()
+            if d.get('status') == 'ok' or d.get('retcode') == 0:
+                Log.ok("QQ 消息发送成功")
+                return True
+            Log.fail(f"QQ 消息发送失败：{d}")
+            return False
+        except Exception as e:
+            Log.fail(f"QQ 消息发送异常：{e}")
+            return False
+
+    def send_report(self, title, items):
+        if not self.enabled:
+            Log.info("未配置 QQ 机器人，跳过推送")
+            return False
+        lines = [f"📋 {title}", ""]
+        lines.extend(items)
+        content = "\n".join(lines)
+        return self.send(content)
+
+
 # ----------------------- 加密工具 -----------------------
 def gen_aes_key():
     rnd = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(22))
@@ -228,6 +284,7 @@ class WpsAuto:
         self.lottery_rewards = []
         self.nickname = ""
         self.pusher = WxPusher(WXPUSHER_APP_TOKEN, WXPUSHER_UID)
+        self.qq_bot = QQBot(QQ_BOT_API, QQ_BOT_TOKEN, QQ_GROUP_ID, QQ_USER_ID)
 
     @staticmethod
     def _extract_uid(cookie):
@@ -584,25 +641,40 @@ class WpsAuto:
         except Exception:
             pass
         # 推送汇总报告
+        report = self._build_report()
         if DO_PUSH:
             try:
-                self.pusher.send_report(f"WPS自动任务报告 - {self.nickname}", self._build_report())
+                self.pusher.send_report(f"WPS自动任务报告 - {self.nickname}", report)
             except Exception as e:
                 Log.fail(f"推送异常：{e}")
+        if DO_QQ_PUSH:
+            try:
+                self.qq_bot.send_report(f"WPS自动任务报告 - {self.nickname}", report)
+            except Exception as e:
+                Log.fail(f"QQ推送异常：{e}")
         Log.ok("全部流程结束")
 
 
 def parse_cookies(raw):
-    if not raw:
-        return []
-    parts = re.split(r'[\n&]+', raw)
-    return [p.strip() for p in parts if p.strip()]
+    """解析 Cookie
+    1. 优先从 WPS_COOKIE 读取（多账号用换行或 & 分隔）
+    2. 同时兼容 WPS_COOKIE_前缀 的环境变量（配合 QQ 机器人多账号管理）
+    """
+    cookies = []
+    if raw:
+        parts = re.split(r'[\n&]+', raw)
+        cookies.extend([p.strip() for p in parts if p.strip()])
+    # 读取 WPS_COOKIE_账号备注 格式的环境变量
+    for k, v in sorted(os.environ.items()):
+        if k.startswith('WPS_COOKIE_') and v.strip():
+            cookies.append(v.strip())
+    return cookies
 
 
 if __name__ == "__main__":
     cookies = parse_cookies(COOKIE)
     if not cookies:
-        Log.fail("未配置 Cookie，请设置环境变量 WPS_COOKIE 或编辑脚本 DEFAULT_COOKIE")
+        Log.fail("未配置 Cookie，请设置环境变量 WPS_COOKIE 或 WPS_COOKIE_账号备注")
         sys.exit(1)
     Log.info(f"共 {len(cookies)} 个账号待执行")
     for idx, ck in enumerate(cookies, 1):
