@@ -1,6 +1,6 @@
-# QL-WPS · WPS 会员中心自动签到 & 任务 & 抽奖 & Telegram 机器人
+# QL-WPS · WPS 会员中心自动签到 & 任务 & 抽奖 & 机器人管理
 
-青龙面板（QingLong）/ 本地均可使用的 WPS 会员中心自动化脚本，支持签到、任务、抽奖、消息推送，以及 Telegram 机器人交互式管理。
+青龙面板（QingLong）/ 本地均可使用的 WPS 会员中心自动化脚本，支持签到、任务、抽奖、消息推送，以及 **Telegram 机器人** 和 **QQ 机器人** 两种交互式管理方式。
 
 通过逆向分析 WPS 活动页面的前端加密逻辑与任务接口，实现**纯接口**完成签到、多种类型任务和自动抽奖，无需浏览器自动化，稳定高效。
 
@@ -14,7 +14,8 @@
 - **WXPusher 推送** — 执行完毕后推送汇总报告到微信（签到状态、任务统计、中奖明细）
 - **多账号** — 支持环境变量配置多个账号，循环执行
 - **青龙适配** — 通过环境变量注入凭据，适配青龙面板定时任务
-- **Telegram 机器人** — 支持通过 TG Bot 提交 Cookie、查询状态、管理青龙变量、立即执行任务，45 秒会话超时
+- **Telegram 机器人** — 通过 TG Bot 提交 Cookie、查询状态、管理青龙变量、立即执行任务，45 秒会话超时
+- **QQ 机器人（NapCatQQ）** — 通过 QQ 群 @机器人 完成登录/查询/管理，插件化架构便于扩展
 
 ## 已验证能力
 
@@ -30,6 +31,7 @@
 | **自动抽奖** | lottery_v2.exec | ✅ 可用 | 10次实测全部中奖（1积分/3积分） |
 | **WXPusher 推送** | /api/send/message | ✅ 可用 | markdown格式汇总报告推送到微信 |
 | **Telegram Bot** | python-telegram-bot | ✅ 可用 | 支持登录/查询/管理/执行 |
+| **QQ Bot** | NapCatQQ + 反向 WS | ✅ 可用 | 插件化，支持群 @ 交互 |
 | trade/auth/invite/subscribe | — | ❌ 需手动 | 需支付/认证/微信环境等，无法纯接口完成 |
 
 ## 快速开始
@@ -53,7 +55,7 @@ export WPS_COOKIE="账号1的Cookie
 账号2的Cookie"
 ```
 
-### 3. 运行
+### 3. 运行签到脚本
 
 ```bash
 python3 wps_auto.py
@@ -94,7 +96,7 @@ python3 wps_auto.py
    - 命令：`task wps_auto.py`（青龙）或 `python3 wps_auto.py`
    - 定时规则：`30 8 * * *`（每天 8:30 执行）
 
-## Telegram 机器人
+## Telegram 机器人（推荐，按流程图实现）
 
 通过 Telegram Bot 与青龙联动，实现“粘贴 Cookie → 自动验证 → 自动写入青龙环境变量”的完整流程。
 
@@ -123,7 +125,7 @@ export QL_CLIENT_SECRET="你的青龙应用 client_secret"
 ### 启动机器人
 
 ```bash
-python3 bot.py
+python3 tg_bot.py
 ```
 
 ### 使用流程
@@ -167,6 +169,47 @@ python3 bot.py
 
 > 一个应用对应一组 `client_id`/`client_secret`，名称可以自定义，只要权限包含环境变量即可。
 
+## QQ 机器人（NapCatQQ，插件化框架）
+
+基于 NapCatQQ 反向 WebSocket 的通用 QQ 机器人框架。除了 WPS 管理外，还可以在 `bot/plugins/` 下新增插件文件来扩展功能。
+
+### 目录结构
+
+```text
+.
+├── main.py                 # QQ 机器人启动入口
+├── bot/
+│   ├── config.py           # 配置管理
+│   ├── core.py             # 核心：WS 服务、插件加载、消息分发
+│   ├── utils.py            # 日志、消息发送、文本清理
+│   ├── ql_api.py           # 青龙 API 封装
+│   ├── session.py          # 用户会话状态管理
+│   └── plugins/
+│       ├── base.py         # 插件基类
+│       ├── wps.py          # WPS 账号管理插件
+│       └── example.py      # 新增插件参考示例
+```
+
+### 启动
+
+```bash
+export $(cat .env | grep -v '^#' | xargs)
+python3 main.py
+```
+
+### 交互命令
+
+```text
+@机器人 账号:wps 登录          # 交互式登录
+@机器人 WPS登录 账号1 cookie  # 一键登录
+@机器人 WPS查询 账号1          # 查询账号
+@机器人 WPS列表                # 列出所有账号
+@机器人 WPS管理 登出 账号1     # 删除账号
+@机器人 帮助                   # 显示命令列表
+```
+
+详细部署步骤可参考 `.env.example` 和 `wps-bot.service`。
+
 ## 配置项
 
 | 配置 | 环境变量 | 默认值 | 说明 |
@@ -174,8 +217,10 @@ python3 bot.py
 | 账号 Cookie | `WPS_COOKIE` | 空 | 多账号用换行或 `&` 分隔 |
 | WxPusher Token | `WXPUSHER_APP_TOKEN` | 空 | 推送应用 Token |
 | WxPusher UID | `WXPUSHER_UID` | 空 | 推送用户 UID |
-| Bot Token | `BOT_TOKEN` | 空 | Telegram Bot Token |
-| 允许用户 | `ALLOWED_USER_IDS` | 空 | 可选，逗号分隔用户 ID |
+| Telegram Bot Token | `BOT_TOKEN` | 空 | Telegram Bot Token |
+| Telegram 允许用户 | `ALLOWED_USER_IDS` | 空 | 可选，逗号分隔用户 ID |
+| QQ 机器人 QQ 号 | `QQ_BOT_QQ` | 空 | 用于识别群 @ 消息 |
+| QQ 管理员 | `ADMIN_QQ` | 空 | 可选，逗号分隔 QQ 号 |
 | 青龙地址 | `QL_URL` | 空 | 青龙面板地址 |
 | 青龙 Client ID | `QL_CLIENT_ID` | 空 | 青龙应用 client_id |
 | 青龙 Secret | `QL_CLIENT_SECRET` | 空 | 青龙应用 client_secret |
@@ -251,9 +296,22 @@ python3 bot.py
 ```
 QL-WPS/
 ├── wps_auto.py       # 主脚本（签到/任务/抽奖/推送）
-├── bot.py            # Telegram 机器人
-├── wps_query.py      # WPS 信息查询模块（只读）
-├── qinglong_api.py   # 青龙面板 Open API 封装
+├── tg_bot.py         # Telegram 机器人
+├── wps_query.py      # WPS 信息查询模块（只读，供 tg_bot 使用）
+├── qinglong_api.py   # 青龙面板 Open API 封装（供 tg_bot 使用）
+├── main.py           # QQ 机器人启动入口
+├── bot/              # QQ 机器人插件化框架
+│   ├── config.py
+│   ├── core.py
+│   ├── utils.py
+│   ├── ql_api.py
+│   ├── session.py
+│   └── plugins/
+│       ├── base.py
+│       ├── wps.py
+│       └── example.py
+├── .env.example      # 环境变量模板（包含 Telegram + QQ + 青龙）
+├── wps-bot.service   # QQ 机器人 systemd 服务模板
 ├── requirements.txt  # Python 依赖
 └── README.md         # 说明文档
 ```
@@ -266,6 +324,7 @@ QL-WPS/
 - 点击/分享/扫描类任务已支持自动完成（通过 `task_center.finish` 接口），开通会员/学生认证/邀请好友等任务需手动操作
 - 建议每日执行一次，频繁请求可能触发风控
 - Telegram 机器人如需在群聊中接收无 @ 的消息，必须关闭 Privacy Mode
+- QQ 机器人需要在 NapCat 中配置反向 WebSocket
 
 ## 依赖
 
@@ -273,3 +332,4 @@ QL-WPS/
 - `requests`
 - `pycryptodome`
 - `python-telegram-bot`
+- `websockets`
