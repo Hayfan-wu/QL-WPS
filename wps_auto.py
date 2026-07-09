@@ -47,6 +47,34 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5, AES
 from Crypto.Util.Padding import pad
 
+
+def load_project_env(env_path=None):
+    """读取项目自身 .env，并写入当前进程环境变量。
+
+    已存在的系统环境变量优先，.env 只补充缺省值，避免覆盖青龙或手动导出的变量。
+    """
+    if env_path is None:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+    values = {}
+    if not os.path.exists(env_path):
+        return values
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            values[key] = value
+            os.environ.setdefault(key, value)
+    return values
+
+
+load_project_env()
+
 # ======================== 配置区 ========================
 # 优先从环境变量 WPS_COOKIE 读取（适配青龙面板，多账号用换行或 & 分隔）
 DEFAULT_COOKIE = ""
