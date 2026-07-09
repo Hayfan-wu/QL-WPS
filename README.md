@@ -39,11 +39,30 @@ python3 wps_auto.py
 3. 添加环境变量 `WPS_COOKIE`
 4. 创建定时任务：`task wps_auto.py`，建议每天执行一次
 
+## 与 QQ 机器人配合使用
+
+```bash
+cd /opt
+git clone https://github.com/Hayfan-wu/QL-WPS.git
+git clone https://github.com/Hayfan-wu/QL-Bot.git
+
+# QL-WPS 项目自己的 .env
+cp /opt/QL-WPS/.env.example /opt/QL-WPS/.env
+nano /opt/QL-WPS/.env
+# 配置：QL_URL, QL_CLIENT_ID, QL_CLIENT_SECRET, WPS_SCRIPT_PATH
+
+# QL-Bot 的 .env 中只需配置项目路径
+WPS_PROJECT_DIR=/opt/QL-WPS
+```
+
+之后通过 QQ 群 `@机器人 WPS登录` 提交 Cookie，`@机器人 WPS执行` 运行签到。
+
 ## 文件说明
 
 ```
 QL-WPS/
-├── wps_auto.py   # 主脚本
+├── wps_auto.py     # 主脚本
+├── .env.example    # 项目级配置模板
 ├── .gitignore
 └── README.md
 ```
